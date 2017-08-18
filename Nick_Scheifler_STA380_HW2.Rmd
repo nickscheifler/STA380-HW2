@@ -1,0 +1,214 @@
+---
+title: "Nick_Scheifler_STA380_HW2"
+author: "Nick Scheifler"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+## Problem 1: Flights at ABIA
+```{R}
+library(ggplot2)
+ABIA = read.csv('C:/Users/nsche/OneDrive/MSBA/Predictive Modeling/HW 2/ABIA.csv', header=TRUE)
+head(ABIA)
+```
+```{R}
+summary(ABIA)
+```
+
+```{R}
+
+#select columns of interest
+focus<-ABIA[,c(2,4,5,7,9,15,16,17,18,25,26,27,28,29)]
+
+focus[,'DIR']=NA
+focus[,'DIR'][focus[,'Origin']=='AUS']='Departures from AUS'
+focus[,'DIR'][focus[,'Dest']=='AUS']='Arrivals in AUS'
+focus[,'DEP']=ceiling(focus[,'DepTime']/100)
+focus[,'ARR']=ceiling(focus[,'ArrTime']/100)
+focus[,'Time']=ifelse(test = focus[,'DIR']=='DEP', yes = focus[,'DEP'], no = focus[,'ARR'])
+
+pv<-as.data.frame.table(xtabs('~ Month + Time + DIR', data = focus))
+
+# Heat map
+heat_map<-ggplot(data = pv, mapping = aes(Month, Time, fill = Freq)) + facet_grid(~ DIR) + geom_tile() + scale_fill_gradient(trans='sqrt', low = 'white', high = 'dark red')
+heat_map
+
+```
+Large quantities of arrives don't begin until 11 AM, and they continue past midnight until 2 AM.
+
+Departures from Austin go in two distinct waves - one in the morning at the start of business and another in the evening, centered at 7 PM.
+
+In general, there is more travel in and out of Austin during the summer months.
+
+
+
+## Problem 2: Author Attribution
+
+First, one needs to read in the files and create the training and test corpora, then pre-process the corpora (change to lower case, removing stop words, removing punctuation and numbers).
+
+Also,  the words in the test and training dataset need to be standardized so that the test and train matrices match.
+
+```{R}
+library(tm)
+library(randomForest)
+library(knitr)
+library(e1071)
+library(rpart)
+library(caret)
+library(plyr)
+
+#define readerPlain function
+readerPlain = function(fname){
+readPlain(elem=list(content=readLines(fname)), id=fname, language='en') }
+
+######################## train ################################
+
+# create file list for importing docs and authors
+author_dirs_train = Sys.glob('C:/Users/nsche/OneDrive/MSBA/Predictive Modeling/HW 2/ReutersC50/C50train/*')
+
+file_list_train = NULL
+train_labels = NULL
+
+for(author in author_dirs_train) {
+  author_name = substring(author, first=75)
+  files_to_add = Sys.glob(paste0(author, '/*.txt'))
+  file_list_train = append(file_list_train, files_to_add)
+  train_labels = append(train_labels, rep(author_name, length(files_to_add)))
+}
+
+# apply readerPlain
+all_docs_train = lapply(file_list_train, readerPlain) 
+names(all_docs_train) = file_list_train
+names(all_docs_train) = sub('.txt', '', names(all_docs_train))
+
+#create training corpus
+corpus_train = Corpus(VectorSource(all_docs_train))
+
+# training corpus pre-processing
+corpus_train = tm_map(corpus_train, content_transformer(removeNumbers)) 
+corpus_train = tm_map(corpus_train, content_transformer(removePunctuation))
+corpus_train = tm_map(corpus_train, content_transformer(tolower)) 
+corpus_train = tm_map(corpus_train, content_transformer(stripWhitespace)) 
+corpus_train = tm_map(corpus_train, content_transformer(removeWords), stopwords("SMART"))
+
+# create document term matrix
+dtm_train = DocumentTermMatrix(corpus_train)
+dtm_train = removeSparseTerms(dtm_train, 0.96)
+
+# Now a dense matrix
+dtm_train_m = as.matrix(dtm_train)
+row.names(dtm_train_m) = file_list_train
+
+
+######################## test ################################
+
+# create file list for importing docs and authors
+author_dirs_test = Sys.glob('C:/Users/nsche/OneDrive/MSBA/Predictive Modeling/HW 2/ReutersC50/C50test/*')
+file_list_test = NULL
+test_labels = NULL
+for(author in author_dirs_test) {
+  author_name = substring(author, first=74)
+  files_to_add = Sys.glob(paste0(author, '/*.txt'))
+  file_list_test = append(file_list_test, files_to_add)
+  test_labels = append(test_labels, rep(author_name, length(files_to_add)))
+}
+
+
+# apply readerPlain
+all_docs_test = lapply(file_list_test, readerPlain) 
+names(all_docs_test) = file_list_test
+names(all_docs_test) = sub('.txt', '', names(all_docs_test))
+
+# create test corpus
+corpus_test = Corpus(VectorSource(all_docs_test))
+
+# test corpus pre-processing
+corpus_test = tm_map(corpus_test, content_transformer(removeNumbers)) 
+corpus_test = tm_map(corpus_test, content_transformer(removePunctuation))
+corpus_test = tm_map(corpus_test, content_transformer(tolower)) 
+corpus_test = tm_map(corpus_test, content_transformer(stripWhitespace)) 
+corpus_test = tm_map(corpus_test, content_transformer(removeWords), stopwords("SMART"))
+
+# standardize test and training data sets
+# create a dictionary with training corpus and take those words from test corpus
+dict_train = NULL
+dict_train = dimnames(dtm_train)[[2]]
+
+# create testing document term matrix
+dtm_test = DocumentTermMatrix(corpus_test, list(dictionary=dict_train))
+dtm_test = removeSparseTerms(dtm_test, 0.96)
+
+# Now a dense matrix
+dtm_test_m = as.matrix(dtm_test)
+row.names(dtm_test_m) = file_list_test
+
+```
+
+Let's try making a couple models.
+
+### Naive Bayes
+
+```{R}
+# create model
+nb_model = naiveBayes(x=dtm_train_m, y=as.factor(train_labels), laplace=1)
+# laplace accounts for words not in training dataset
+# run the prediction
+nb_prediction = predict(nb_model, dtm_test_m)
+
+cm_nb = confusionMatrix(table(nb_prediction,test_labels))
+cm_nb_df = as.data.frame(cm_nb$byClass)
+cm_nb_df[order(-cm_nb_df$Sensitivity),][1]
+
+Accuracy = mean(cm_nb_df$Sensitivity)
+
+Accuracy
+```
+
+Naive Baye's doesn't seem to be working well. 1.8% accuracy. It can predict with some level of accuracy for Roger Fillion and Alan Crosby, but the accuracy rate quickly drops and hits 0 for the majority of the authors.
+
+### Random Forests
+
+```{R}
+rf_model = randomForest(x=dtm_train_m, y=as.factor(train_labels), mtry=4, ntree=200)
+rf_predicted = predict(rf_model, data = dtm_test_m)
+
+#check model accuracy
+rf_cm = confusionMatrix(table(rf_predicted,test_labels))
+rf_cm$overall
+```
+
+Okay, that's better. Random Forests seems to be getting a little over 70% accuracy, which is much better than the Naive Bayes model. I may have messed up somewhere in the Naive Bayes model, but it looks like Random Forests is the superior model for this data set.
+
+## Problem 3: Practice with Association Rule Mining
+
+
+```{R}
+library(arules)
+
+#read dataset using read.transactions
+groceries = read.transactions('C:/Users/nsche/OneDrive/MSBA/Predictive Modeling/HW 2/groceries.txt', format = 'basket', sep = ',', rm.duplicates = FALSE)
+```
+
+Using the Apriori algorithm, I created a set of grocery rules with a support theshold of .01 and a confidence threshold of .2. I picked these through trial and error, as increasing support threshold by even a few hundredths drastically reduced the number of rules. Increasing threshold by a couple tenths had the same effect. 
+
+```{R}
+grocery_rules <- apriori(groceries, parameter=list(support=.01, confidence=.2, maxlen=8))
+```
+
+This created 232 rules.
+
+
+Let's look at the items with the highest lift.
+
+```{R}
+inspect(subset(grocery_rules, subset=lift > 3))
+```
+These are the items with the highest lifts, or associations. If one buys beef, he or she is 3.04 times more likley to buy root vegetables. If one buys vegetables and yogurt, he or she is 3.27 times more likely to buy whipped or sour cream.
+
+```{R}
+inspect(subset(grocery_rules, subset=support > .02 & confidence > 0.3 & lift > 2))
+
+```
+
+If you increase the support and confidence, it looks like the clearest associations are between vegetables and other vegetables (surprise), and between different kinds of dairy.
